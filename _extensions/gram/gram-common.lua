@@ -4,6 +4,7 @@
 --          M.injectCss()
 
 local M = {}
+M.hasGram = false -- set true by shortcode/filter when a doc contains gram content
 
 local HERE = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
 

@@ -26,15 +26,9 @@ local function isGram(el)
 end
 
 function Pandoc(doc)
-  -- inject css only if the document actually contains gram blocks
-  local hasGram = false
-  doc:walk({
-    CodeBlock = function(el)
-      if isGram(el) then hasGram = true end
-      return nil
-    end,
-  })
-  if hasGram then M.injectCss() end
+  -- CodeBlock handlers below flag the doc via M.hasGram (by then the blocks
+  -- are already RawBlocks, so walking for them here finds nothing)
+  if M.hasGram then M.injectCss() end
   return doc
 end
 
@@ -49,5 +43,6 @@ function CodeBlock(el)
     db = M.findDb()
   end
   local r = M.compile(el.text, extractScale(el), lang, db)
+  M.hasGram = true
   return pandoc.RawBlock("html", r.html)
 end
