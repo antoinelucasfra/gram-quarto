@@ -1,0 +1,6 @@
+.quarto-gram-cache/
+node_modules/
+docs/_output/
+docs/.quarto/
+docs/_extensions/
+docs/index_files/
