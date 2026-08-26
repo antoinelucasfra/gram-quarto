@@ -7,7 +7,7 @@ for users.
 ## Install
 
 ``` bash
-quarto add tonio-lucasfra/gram-quarto   # once published to GitHub
+quarto add antoinelucasfra/gram-quarto
 # or, from a local copy:
 quarto add /path/to/gram-quarto
 ```
