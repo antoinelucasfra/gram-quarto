@@ -12,13 +12,16 @@ quarto add tonio-lucasfra/gram-quarto   # once published to GitHub
 quarto add /path/to/gram-quarto
 ```
 
-**Required one-line setup** in `_quarto.yml` (Quarto ≥ 1.10 no longer auto-runs
-extension-contributed filters):
+**Required one-line setup** in `_quarto.yml` — Quarto requires filters to be
+explicitly listed (shortcodes load automatically, filters don't):
 
 ``` yaml
 filters:
   - gram
 ```
+
+Without this line, `{{< gram >}}` shortcodes work but ```` ```{.gram} ````
+code blocks render as plain code.
 
 Requirements: Node ≥ 18 on PATH (used at build time only).
 
@@ -40,8 +43,11 @@ Options: `scale="2"` (scale all quantities), `lang="fr"` (labels), `db="path/to/
 Same attributes work on the block: ```` ```{.gram scale=2} ````.
 
 **Validation is automatic**: every referenced or embedded Gram source is
-compiled on each render. Broken recipes fail the build; unknown ingredients
-produce warnings.
+compiled on each render. Broken recipes fail the build. The bundled compiler
+also runs strict sanity checks the lenient gram parser skips — control
+characters, unbalanced braces, sources with no ingredients or sections, and
+unparseable `@ref`s all become build errors instead of silently rendering an
+empty card. Unknown ingredients produce warnings.
 
 ## Ingredient database
 

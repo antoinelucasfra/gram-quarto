@@ -41,14 +41,20 @@ assert(
   "unknown-ingredient warning listed",
 );
 
-// 4. invalid gram reports error without crashing
-results = compile([{ id: "bad", source: "\x00\x01binary junk\n###\x07", scale: 1, lang: "en" }]);
-if (!results.bad.error) {
-  // parser is lenient; only require it did not crash the process
-  console.log("note: lenient parser accepted junk input");
-} else {
-  assert(typeof results.bad.error === "string");
+// 4. junk input fails loudly (parser alone is lenient)
+const junkCases = [
+  "@@@\n",
+  "just some prose, no recipe here\n",
+  "",
+];
+for (const [i, src] of junkCases.entries()) {
+  results = compile([{ id: `junk${i}`, source: src, scale: 1, lang: "en" }]);
+  assert(results[`junk${i}`].error, `junk case ${i} rejected`);
 }
+
+// 4b. unbalanced braces fail
+results = compile([{ id: "bal", source: "## X\n[Fry] @flour{200g.\n", scale: 1, lang: "en" }]);
+assert(/unbalanced/.test(results.bal.error), "unclosed brace rejected");
 
 // 5. invalid scale rejected
 results = compile([{ id: "s0", source: CAKE, scale: -2, lang: "en" }]);
