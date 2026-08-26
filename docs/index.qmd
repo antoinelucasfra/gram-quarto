@@ -1,0 +1,23 @@
+---
+title: "Gram extension demo"
+---
+
+## From a file
+
+{{< gram src="recipes/pancakes.gram" >}}
+
+## Inline source
+
+```{.gram}
+## Tomato Soup
+[Sauté] @onion{1}, chopped, in @olive oil{2tbsp} for ~{5 min}.
+[Simmer] with @tomato{800g} and @stock{500ml} for ~{20 min}.
+[Blend] until smooth.
+```
+
+## Scaled 3×
+
+```{.gram scale=2}
+## Pancakes
+[Fry] @flour{200g} in @butter{30g}, ~{3 min} per side.
+```

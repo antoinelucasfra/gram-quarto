@@ -1,0 +1,22 @@
+{
+  "name": "gram-quarto",
+  "version": "1.0.0",
+  "description": "Quarto extension: render Gram recipes at build time",
+  "scripts": {
+    "build": "esbuild src/compile.mjs --bundle --platform=node --format=cjs --outfile=resources/gram-compile.cjs --log-level=warning",
+    "test": "node test/test-compile.mjs"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "devDependencies": {
+    "@gram-lang/analyzer": "^1.2.1",
+    "@gram-lang/kitchen": "^1.2.1",
+    "@gram-lang/parser": "^1.2.1",
+    "@gram-lang/renderer": "^1.2.1",
+    "esbuild": "^0.28.2",
+    "yaml": "^2.9.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
