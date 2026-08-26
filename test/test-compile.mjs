@@ -5,7 +5,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert";
 
-const BUNDLE = new URL("../resources/gram-compile.cjs", import.meta.url).pathname;
+const BUNDLE = new URL("../_extensions/gram/resources/gram-compile.cjs", import.meta.url).pathname;
 
 function compile(jobs) {
   const r = spawnSync("node", [BUNDLE], {
