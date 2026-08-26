@@ -15,6 +15,40 @@ import { parse as parseYaml } from "yaml";
 
 const dbCache = new Map();
 
+// The gram parser is lenient by design (garbage parses into text nodes), so
+// the extension adds its own strict gate: silent-junk input must fail the
+// build instead of rendering as an empty/broken card.
+function validateSource(src) {
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(src))
+    throw new Error("source contains control characters — not gram text?");
+  const open = (src.match(/[{[]/g) || []).length;
+  const close = (src.match(/[}\]]/g) || []).length;
+  if (open !== close)
+    throw new Error(
+      `unbalanced braces/brackets (${open} open vs ${close} close) — unclosed @ref{qty} or [Step]`,
+    );
+}
+
+function validateAst(ast) {
+  const errs = [];
+  let ingredients = 0;
+  let sections = 0;
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (n.type === "Section" && n.title) sections++;
+    if (n.type === "Ingredient") {
+      ingredients++;
+      if (!/^[^@{}\[\]]+$/.test(String(n.name ?? "")))
+        errs.push(`unparseable ingredient reference "${n.name}"`);
+    }
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(ast);
+  if (ingredients === 0 && sections === 0)
+    errs.push("no ingredients (@name{qty}) and no ## sections found");
+  return errs;
+}
+
 function loadDb(path) {
   if (!path) return {};
   if (dbCache.has(path)) return dbCache.get(path);
@@ -27,7 +61,10 @@ function loadDb(path) {
 function renderJob(job) {
   if (typeof job.scale !== "number" || !isFinite(job.scale) || job.scale <= 0)
     throw new Error(`invalid scale ${JSON.stringify(job.scale)} (must be > 0)`);
+  validateSource(job.source);
   const ast = getAST(job.source);
+  const astErrs = validateAst(ast);
+  if (astErrs.length > 0) throw new Error(`not a valid Gram recipe: ${astErrs[0]}`);
   const compiled = compile(ast, {
     scaleFactor: job.scale === 1 ? undefined : job.scale,
   });
