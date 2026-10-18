@@ -15,7 +15,7 @@ This extension wraps the same compiler (`@gram-lang/parser`, `kitchen`,
 `analyzer`, `renderer`) but makes it a first-class Quarto citizen. What it
 adds over running the base Gram tool by hand:
 
-- **Embed recipes where you write.** `` ```` {.gram} `````` code blocks and
+- **Embed recipes where you write.** Fenced `{.gram}` code blocks and
   `{{< gram src=... >}}` shortcodes compile during `quarto render`, so a recipe
   is just part of a document — no intermediate HTML files to copy around.
 - **Strict validation.** Gram's parser is lenient by design (garbage becomes
@@ -47,7 +47,7 @@ build script stays metadata-only.
 
 ## Install
 
-``` bash
+```bash
 quarto add antoinelucasfra/gram-quarto
 # or, from a local copy:
 quarto add /path/to/gram-quarto
@@ -56,13 +56,13 @@ quarto add /path/to/gram-quarto
 **Required one-line setup** in `_quarto.yml` — Quarto requires filters to be
 explicitly listed (shortcodes load automatically, filters don't):
 
-``` yaml
+```yaml
 filters:
   - gram
 ```
 
-Without this line, `{{< gram >}}` shortcodes work but ```` ```{.gram} ````
-code blocks render as plain code.
+Without this line, `{{< gram >}}` shortcodes work but fenced `{.gram}` code
+blocks render as plain code.
 
 Requirements: Node ≥ 18 on PATH (used at build time only).
 
@@ -70,18 +70,24 @@ Requirements: Node ≥ 18 on PATH (used at build time only).
 
 **Embed a `.gram` file:**
 
-    {{< gram src="recipes/pancakes.gram" >}}
+```text
+{{< gram src="recipes/pancakes.gram" >}}
+```
 
-Options: `scale="2"` (scale all quantities), `lang="fr"` (labels), `db="path/to/ingredients.yaml"`.
+Options: `scale="2"` (scale all quantities), `lang="fr"` (labels),
+`db="path/to/ingredients.yaml"`.
 
 **Write a recipe inline in any document:**
 
-    ```{.gram}
-    ## Pancakes
-    [Fry] @flour{200g} in @butter{30g}, ~{3 min} per side.
-    ```
+````text
+```{.gram}
+## Pancakes
+[Fry] @flour{200g} in @butter{30g}, ~{3 min} per side.
+```
+````
 
-Same attributes work on the block: ```` ```{.gram scale=2} ````.
+Same attributes work on the block: add them after the class, e.g. a fenced
+block opening line of ` ```{.gram scale=2} ` (without spaces).
 
 **Output variants** (same options):
 
@@ -94,7 +100,9 @@ Same attributes work on the block: ```` ```{.gram scale=2} ````.
 **Full interactive recipe** (scale switcher + cook mode + snippet + timeline, one
 small bundled script, no dependencies):
 
-    {{< gram-interactive src="recipes/pancakes.gram" scales="0.5,1,2,3" >}}
+```text
+{{< gram-interactive src="recipes/pancakes.gram" scales="0.5,1,2,3" >}}
+```
 
 Attributes: `scales="1,2"` (list of scales to precompile; default `0.5,1,2,3`),
 `snippet="false"` / `gantt="false"` to drop sections, plus `src`, `lang`, `db`.
@@ -137,9 +145,9 @@ that contain recipes.
 
 ## Development
 
-``` bash
-npm install            # @gram-lang/* dev deps
-npm run build          # esbuild src/compile.mjs -> resources/gram-compile.cjs
+```bash
+npm install                  # @gram-lang/* dev deps
+npm run build                # esbuild src/compile.mjs -> resources/gram-compile.cjs
 node test/test-compile.mjs   # unit checks
 cd docs && quarto render     # e2e demo site
 ```
