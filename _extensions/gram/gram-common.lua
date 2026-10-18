@@ -50,13 +50,19 @@ function M.resolvePath(p)
   return M.projectDir() .. "/" .. p
 end
 
--- find nearest .gram/ingredients.yaml walking up from projectDir
+-- find nearest .gram/ingredients.yaml walking up from the extension dir
+-- (independent of CWD / quarto.project quirks; the extension lives inside
+-- the Quarto project so its ancestors include the project root)
 function M.findDb()
-  local prefix = ""
-  for seg in M.projectDir():gsub("\\", "/"):gmatch("[^/]+") do
-    prefix = prefix .. seg .. "/"
-    local candidate = "/" .. prefix .. ".gram/ingredients.yaml"
+  local segs = {}
+  for seg in HERE:gsub("\\", "/"):gmatch("[^/]+") do table.insert(segs, seg) end
+  for i = #segs, 1, -1 do
+    local candidate = table.concat(segs, "/", 1, i) .. "/.gram/ingredients.yaml"
     if M.fileExists(candidate) then return candidate end
+    if not candidate:match("^%a:") then
+      local abs = "/" .. candidate
+      if M.fileExists(abs) then return abs end
+    end
   end
   return nil
 end

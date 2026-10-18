@@ -123,6 +123,8 @@ return {
     if wantSnippet then table.insert(outputs, "snippet") end
     if wantGantt then table.insert(outputs, "gantt") end
     local all = M.compile(source, scales, lang, db, outputs)
+    -- single-scale compile returns the result itself, not a scale-keyed map
+    if all.html then all = { [tostring(scales[1])] = all } end
     M.injectCss()
     M.injectApp()
 
