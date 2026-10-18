@@ -31119,6 +31119,573 @@ var htmlBackend = {
 function toHTML(data, options = {}) {
   return renderRecipe(data, options, htmlBackend);
 }
+var DEFAULT_GAP_THRESHOLD = 60;
+var DEFAULT_COMPRESSED_GAP_SIZE = 20;
+function formatTime(minutes) {
+  const h = Math.floor(minutes / 60);
+  const m = Math.floor(minutes % 60);
+  if (h > 0) {
+    return m > 0 ? `${h}h${m.toString().padStart(2, "0")}` : `${h}h`;
+  }
+  return `${m}m`;
+}
+function formatAxisTime(realTime, opts) {
+  const { timeMode, targetTime, maxRealTime } = opts;
+  if (timeMode === "reverse") {
+    const diff = maxRealTime - realTime;
+    if (diff === 0) return "T-0";
+    return `T-${formatTime(diff)}`;
+  }
+  if (timeMode === "target" && targetTime) {
+    const [th, tm] = targetTime.split(":").map(Number);
+    if (th !== void 0 && tm !== void 0 && !Number.isNaN(th) && !Number.isNaN(tm)) {
+      const diff = maxRealTime - realTime;
+      const totalTargetMins = th * 60 + tm;
+      const timeAtTick = totalTargetMins - diff;
+      const normalizedTime = (timeAtTick % 1440 + 1440) % 1440;
+      const rh = Math.floor(normalizedTime / 60);
+      const rm = normalizedTime % 60;
+      const d = /* @__PURE__ */ new Date();
+      d.setHours(rh, rm, 0, 0);
+      return new Intl.DateTimeFormat(void 0, {
+        hour: "numeric",
+        minute: "2-digit"
+      }).format(d);
+    }
+  }
+  return formatTime(realTime);
+}
+function computeGaps(data, gapThreshold = DEFAULT_GAP_THRESHOLD) {
+  const sections = data?.sections;
+  if (!sections) return [];
+  const prepTime = data.metrics?.preparationTime || 0;
+  const activePeriods = [];
+  let overallMaxRealTime = prepTime;
+  if (prepTime > 0) {
+    activePeriods.push({ start: 0, end: prepTime });
+  }
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    for (const step of section.steps) {
+      if (step.type === "step" && step.timings) {
+        if (step.timings.activeDuration > 0) {
+          activePeriods.push({
+            start: step.timings.start + prepTime,
+            end: step.timings.end + prepTime,
+            sectionIndex: i
+          });
+          overallMaxRealTime = Math.max(
+            overallMaxRealTime,
+            step.timings.end + prepTime
+          );
+        }
+        if (step.backgroundTasks) {
+          for (const task of step.backgroundTasks) {
+            overallMaxRealTime = Math.max(
+              overallMaxRealTime,
+              step.timings.start + prepTime + task.startOffset + task.duration
+            );
+          }
+        }
+      }
+    }
+  }
+  activePeriods.push({ start: 0, end: 0 });
+  if (overallMaxRealTime > 0) {
+    activePeriods.push({ start: overallMaxRealTime, end: overallMaxRealTime });
+  }
+  activePeriods.sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const period of activePeriods) {
+    if (merged.length === 0) {
+      merged.push({ ...period });
+    } else {
+      const last = merged[merged.length - 1];
+      if (period.start <= last.end) {
+        last.end = Math.max(last.end, period.end);
+        if (period.sectionIndex !== void 0)
+          last.sectionIndex = period.sectionIndex;
+      } else {
+        merged.push({ ...period });
+      }
+    }
+  }
+  const foundGaps = [];
+  for (let i = 0; i < merged.length - 1; i++) {
+    const current = merged[i];
+    const next = merged[i + 1];
+    const gapDuration = next.start - current.end;
+    if (gapDuration >= gapThreshold) {
+      foundGaps.push({ start: current.end, end: next.start });
+    }
+  }
+  return foundGaps;
+}
+function getVirtualTime(realTime, gaps, compressedGapSize = DEFAULT_COMPRESSED_GAP_SIZE) {
+  let subtracted = 0;
+  for (const gap of gaps) {
+    if (realTime <= gap.start) break;
+    if (realTime >= gap.end) {
+      const gapDuration = gap.end - gap.start;
+      subtracted += gapDuration - compressedGapSize;
+    } else {
+      const timeInGap = realTime - gap.start;
+      const gapDuration = gap.end - gap.start;
+      const proportion = timeInGap / gapDuration;
+      const virtualTimeInGap = proportion * compressedGapSize;
+      subtracted += timeInGap - virtualTimeInGap;
+    }
+  }
+  return realTime - subtracted;
+}
+function serializeStepContent(content, registry2, lang) {
+  if (!content || !Array.isArray(content)) return "";
+  const renderContext = { registry: registry2, lang };
+  const joined = joinStepTokens(
+    content,
+    (c) => {
+      if (typeof c === "string") return c;
+      if (c && typeof c === "object") {
+        const md = formatElement(c, "md", renderContext);
+        return md.replace(/[*_👉]/gu, "");
+      }
+      return "";
+    },
+    (c) => typeof c !== "string" && c.type !== "comment"
+  );
+  return joined.replace(/\s+/g, " ").trim();
+}
+function buildTracks(data, opts = {}) {
+  const sections = data?.sections;
+  if (!sections) return { tracks: [], totalVirtualTime: 0, maxRealTime: 0 };
+  const t = getDictionary(opts.lang);
+  const gaps = computeGaps(data);
+  const registry2 = data.registry;
+  const prepTime = data.metrics?.preparationTime || 0;
+  const cookTrack = {
+    id: "cook",
+    title: t.playground?.views?.gantt_cook || "Actions",
+    blocks: [],
+    type: "active"
+  };
+  const passiveTracksMap = /* @__PURE__ */ new Map();
+  let maxRealTime = 0;
+  let activeStepIndex = 0;
+  if (prepTime > 0) {
+    const label = t.renderer?.prepTime || "Prep";
+    const fitsInside = prepTime * 12 >= label.length * 7 + 36;
+    cookTrack.blocks.push({
+      id: "cook_prep",
+      start: 0,
+      end: prepTime,
+      duration: prepTime,
+      label,
+      tooltip: t.renderer?.prepTimeTooltip || "Mise en place",
+      verticalIndex: activeStepIndex++,
+      fitsInside
+    });
+    maxRealTime = prepTime;
+  }
+  let sectionIndex = 0;
+  const isSingleUnnamedSection = sections.length === 1 && !sections[0]?.title;
+  for (const section of sections) {
+    const computedSectionIndex = isSingleUnnamedSection ? "default" : sectionIndex % 9;
+    for (const step of section.steps) {
+      if (step.type === "step" && step.timings) {
+        let temperature;
+        let isAssembly = false;
+        for (const c of step.content ?? []) {
+          if (c && typeof c === "object") {
+            if (c.type === "temperature") {
+              temperature = c.text || (c.quantity ? `${typeof c.quantity === "object" ? c.quantity.value : c.quantity}${c.unit || "C"}` : void 0);
+            }
+            if (c.type === "reference") {
+              isAssembly = true;
+            }
+          }
+        }
+        if (step.timings.activeDuration > 0) {
+          const blockStart = step.timings.start + prepTime;
+          const blockEnd = step.timings.end + prepTime;
+          const fullText = serializeStepContent(
+            step.content,
+            registry2,
+            opts.lang
+          );
+          const label = step.action || t.playground?.views?.gantt_cook || "Actions";
+          const fitsInside = step.timings.activeDuration * 12 >= label.length * 7 + 36;
+          const block = {
+            id: `cook_${blockStart}`,
+            start: blockStart,
+            end: blockEnd,
+            duration: step.timings.activeDuration,
+            label,
+            tooltip: fullText.length > 100 ? fullText.substring(0, 100) + "..." : fullText,
+            sectionIndex: computedSectionIndex,
+            isAssembly,
+            verticalIndex: activeStepIndex++,
+            fitsInside,
+            temperature
+          };
+          cookTrack.blocks.push(block);
+          maxRealTime = Math.max(maxRealTime, blockEnd);
+        }
+        if (step.backgroundTasks) {
+          for (const task of step.backgroundTasks) {
+            const trackName = task.name || t.playground?.views?.gantt_timer || "Timer";
+            if (!passiveTracksMap.has(trackName)) {
+              passiveTracksMap.set(trackName, {
+                id: `track_${trackName}`,
+                title: trackName.charAt(0).toUpperCase() + trackName.slice(1),
+                blocks: [],
+                type: "passive"
+              });
+            }
+            const taskStart = step.timings.start + prepTime + task.startOffset;
+            const taskEnd = taskStart + task.duration;
+            passiveTracksMap.get(trackName)?.blocks.push({
+              id: `task_${taskStart}_${task.name}`,
+              start: taskStart,
+              end: taskEnd,
+              duration: task.duration,
+              label: formatTime(task.duration),
+              tooltip: trackName,
+              temperature
+            });
+            maxRealTime = Math.max(maxRealTime, taskEnd);
+          }
+        }
+      }
+    }
+    sectionIndex++;
+  }
+  cookTrack.dynamicHeight = Math.max(48, activeStepIndex * 40 + 16);
+  const tracks = [cookTrack, ...Array.from(passiveTracksMap.values())];
+  const totalVirtualTime = getVirtualTime(maxRealTime, gaps);
+  return { tracks, totalVirtualTime, maxRealTime };
+}
+function computeTimeTicks(maxRealTime, totalVirtualTime, gaps, timeMode, targetTime) {
+  const ticks = [];
+  let interval = 10;
+  if (totalVirtualTime > 120) interval = 30;
+  if (totalVirtualTime > 300) interval = 60;
+  if (totalVirtualTime > 1200) interval = 240;
+  const label = (realTime) => formatAxisTime(realTime, { timeMode, targetTime, maxRealTime });
+  for (let t = 0; t <= maxRealTime; t += interval) {
+    let inGap = false;
+    for (const gap of gaps) {
+      if (t > gap.start && t < gap.end) {
+        inGap = true;
+        break;
+      }
+    }
+    if (inGap) continue;
+    ticks.push({
+      realTime: t,
+      virtualPercent: getVirtualTime(t, gaps) / totalVirtualTime * 100,
+      label: label(t)
+    });
+  }
+  if (maxRealTime % interval !== 0 && maxRealTime > 0) {
+    let inGap = false;
+    for (const gap of gaps) {
+      if (maxRealTime > gap.start && maxRealTime < gap.end) {
+        inGap = true;
+        break;
+      }
+    }
+    if (!inGap) {
+      const finalVirtualPercent = 100;
+      if (ticks.length > 0) {
+        const lastTick = ticks[ticks.length - 1];
+        if (finalVirtualPercent - lastTick.virtualPercent < 5) {
+          ticks.pop();
+        }
+      }
+      ticks.push({
+        realTime: maxRealTime,
+        virtualPercent: finalVirtualPercent,
+        label: label(maxRealTime)
+      });
+    }
+  }
+  return ticks;
+}
+function computeVisualGaps(gaps, totalVirtualTime) {
+  return gaps.map((g) => {
+    const vStart = getVirtualTime(g.start, gaps);
+    const vEnd = getVirtualTime(g.end, gaps);
+    const skipped = g.end - g.start;
+    return {
+      leftPercent: vStart / totalVirtualTime * 100,
+      widthPercent: (vEnd - vStart) / totalVirtualTime * 100,
+      label: `\u23F3 ${formatTime(skipped)}`
+    };
+  });
+}
+function computeSectionLegendItems(data, lang) {
+  const sections = data?.sections;
+  if (!sections) return [];
+  const t = getDictionary(lang);
+  const isSingleUnnamed = sections.length === 1 && !sections[0]?.title;
+  if (isSingleUnnamed) {
+    return [
+      {
+        id: "default",
+        title: t.playground?.views?.gantt_active || "Actions",
+        colorClass: "section-color-default"
+      }
+    ];
+  }
+  return sections.map((sec, idx) => {
+    const s = sec;
+    return {
+      id: s.id || `section_${idx}`,
+      title: s.title || `${t.playground?.views?.gantt_section || "Section"} ${idx + 1}`,
+      colorClass: `section-color-${idx % 9}`
+    };
+  });
+}
+var VISIBLE_SECTIONS_LIMIT = 3;
+function toGanttHTML(data, options = {}) {
+  const t = getDictionary(options.lang);
+  const gaps = computeGaps(data, options.gapThresholdMinutes);
+  const { tracks, totalVirtualTime, maxRealTime } = buildTracks(data, {
+    lang: options.lang
+  });
+  if (tracks.length === 0 || maxRealTime <= 0) {
+    const emptyText = t.playground?.views?.gantt_empty || "No timing data available. Write a recipe with steps and durations to see the chart.";
+    return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  }
+  const visualGaps = computeVisualGaps(gaps, totalVirtualTime);
+  const ticks = computeTimeTicks(
+    maxRealTime,
+    totalVirtualTime,
+    gaps,
+    "forward",
+    ""
+  );
+  const legendItems = computeSectionLegendItems(data, options.lang);
+  const visibleLegend = legendItems.slice(0, VISIBLE_SECTIONS_LIMIT);
+  const overflowLegend = legendItems.slice(VISIBLE_SECTIONS_LIMIT);
+  const compressedTooltip = escapeHtml(
+    t.playground?.views?.gantt_compressed || "Time compressed (idle period)"
+  );
+  const legendHtml = `<div class="gantt-legend">
+${visibleLegend.map(
+    (sec) => `      <span class="legend-item">
+        <span class="color-box ${escapeHtml(sec.colorClass)}"></span>
+        <span class="legend-text" title="${escapeHtml(sec.title)}">${escapeHtml(sec.title)}</span>
+      </span>`
+  ).join("\n")}
+${overflowLegend.length > 0 ? `      <div class="legend-item overflow-item" tabindex="0">
+        <span class="color-box overflow-box">+${overflowLegend.length}</span>
+        <span class="legend-text">${escapeHtml(
+    (t.playground?.views?.gantt_more_sections || "+{count} more...").replace("{count}", String(overflowLegend.length))
+  )}</span>
+        <div class="sections-popover">
+${overflowLegend.map(
+    (sec) => `          <div class="popover-item">
+            <span class="color-box ${escapeHtml(sec.colorClass)}"></span>
+            <span class="popover-text">${escapeHtml(sec.title)}</span>
+          </div>`
+  ).join("\n")}
+        </div>
+      </div>` : ""}
+      <span class="legend-item passive">
+        <span class="color-box"></span>
+        ${escapeHtml(t.playground?.views?.gantt_passive || "T\xE2che de fond")}
+      </span>
+    </div>`;
+  const controlsHtml = `<div class="gantt-controls">
+      <details class="options-dropdown">
+        <summary class="options-summary" title="Options">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2 11.9998C2 11.1353 2.1097 10.2964 2.31595 9.49631C3.40622 9.55283 4.48848 9.01015 5.0718 7.99982C5.65467 6.99025 5.58406 5.78271 4.99121 4.86701C6.18354 3.69529 7.66832 2.82022 9.32603 2.36133C9.8222 3.33385 10.8333 3.99982 12 3.99982C13.1667 3.99982 14.1778 3.33385 14.674 2.36133C16.3317 2.82022 17.8165 3.69529 19.0088 4.86701C18.4159 5.78271 18.3453 6.99025 18.9282 7.99982C19.5115 9.01015 20.5938 9.55283 21.6841 9.49631C21.8903 10.2964 22 11.1353 22 11.9998C22 12.8643 21.8903 13.7032 21.6841 14.5033C20.5938 14.4468 19.5115 14.9895 18.9282 15.9998C18.3453 17.0094 18.4159 18.2169 19.0088 19.1326C17.8165 20.3043 16.3317 21.1794 14.674 21.6383C14.1778 20.6658 13.1667 19.9998 12 19.9998C10.8333 19.9998 9.8222 20.6658 9.32603 21.6383C7.66832 21.1794 6.18354 20.3043 4.99121 19.1326C5.58406 18.2169 5.65467 17.0094 5.0718 15.9998C4.48848 14.9895 3.40622 14.4468 2.31595 14.5033C2.1097 13.7032 2 12.8643 2 11.9998ZM6.80385 14.9998C7.43395 16.0912 7.61458 17.3459 7.36818 18.5236C7.77597 18.8138 8.21005 19.0652 8.66489 19.2741C9.56176 18.4712 10.7392 17.9998 12 17.9998C13.2608 17.9998 14.4382 18.4712 15.3351 19.2741C15.7899 19.0652 16.224 18.8138 16.6318 18.5236C16.3854 17.3459 16.566 16.0912 17.1962 14.9998C17.8262 13.9085 18.8225 13.1248 19.9655 12.7493C19.9884 12.5015 20 12.2516 20 11.9998C20 11.7481 19.9884 11.4981 19.9655 11.2504C18.8225 10.8749 17.8262 10.0912 17.1962 8.99982C16.566 7.90845 16.3854 6.65378 16.6318 5.47605C16.224 5.18588 15.7899 4.93447 15.3351 4.72552C14.4382 5.52844 13.2608 5.99982 12 5.99982C10.7392 5.99982 9.56176 5.52844 8.66489 4.72552C8.21005 4.93447 7.77597 5.18588 7.36818 5.47605C7.61458 6.65378 7.43395 7.90845 6.80385 8.99982C6.17376 10.0912 5.17754 10.8749 4.03451 11.2504C4.01157 11.4981 4 11.7481 4 11.9998C4 12.2516 4.01157 12.5015 4.03451 12.7493C5.17754 13.1248 6.17376 13.9085 6.80385 14.9998ZM12 14.9998C10.3431 14.9998 9 13.6567 9 11.9998C9 10.343 10.3431 8.99982 12 8.99982C13.6569 8.99982 15 10.343 15 11.9998C15 13.6567 13.6569 14.9998 12 14.9998ZM12 12.9998C12.5523 12.9998 13 12.5521 13 11.9998C13 11.4475 12.5523 10.9998 12 10.9998C11.4477 10.9998 11 11.4475 11 11.9998C11 12.5521 11.4477 12.9998 12 12.9998Z"></path></svg>
+        </summary>
+        <div class="options-dropdown-content gantt-options-content">
+          <div class="time-mode-selector">
+            <div class="time-select-wrapper">
+              <select class="time-select">
+                <option value="forward">${escapeHtml(t.playground?.views?.gantt_mode_forward || "Stopwatch (T+)")}</option>
+                <option value="reverse">${escapeHtml(t.playground?.views?.gantt_mode_reverse || "Countdown (T-)")}</option>
+                <option value="target">${escapeHtml(t.playground?.views?.gantt_mode_target || "Target Time")}</option>
+              </select>
+              <svg class="select-chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </div>
+            <div class="target-time-wrapper" hidden>
+              <span>${escapeHtml(t.playground?.views?.gantt_target_time_label || "Serve at:")}</span>
+              <input type="time" class="target-time-input">
+            </div>
+          </div>
+          <label class="compact-toggle">
+            <input type="checkbox" class="compact-toggle-input">
+            ${escapeHtml(t.playground?.views?.gantt_compact || "Vue Compacte")}
+          </label>
+        </div>
+      </details>
+    </div>`;
+  const axisGapsHtml = visualGaps.map(
+    (gap) => `          <div class="visual-gap" style="left:${gap.leftPercent}%;width:${gap.widthPercent}%" title="${compressedTooltip}">
+            <div class="gap-pattern"></div>
+            <div class="gap-label">${escapeHtml(gap.label)}</div>
+          </div>`
+  ).join("\n");
+  const ticksHtml = ticks.map(
+    (tick, index) => `          <div class="axis-tick${index === 0 ? " is-first-tick" : ""}${index === ticks.length - 1 ? " is-last-tick" : ""}" data-real-time="${tick.realTime}" style="left:${tick.virtualPercent}%">
+            <div class="tick-mark"></div>
+            <div class="tick-label">${escapeHtml(tick.label)}</div>
+          </div>`
+  ).join("\n");
+  const trackOverlayGapsHtml = visualGaps.map(
+    (gap) => `          <div class="visual-gap" style="left:${gap.leftPercent}%;width:${gap.widthPercent}%" title="${compressedTooltip}">
+            <div class="gap-pattern"></div>
+          </div>`
+  ).join("\n");
+  const renderBlock = (block, trackType) => {
+    const classes = [
+      "time-block",
+      trackType,
+      trackType === "active" ? `section-color-${block.sectionIndex ?? "default"}` : ""
+    ].filter(Boolean).join(" ");
+    const styleParts = [
+      `left:${getVirtualTime(block.start, gaps) / totalVirtualTime * 100}%`,
+      `width:${(getVirtualTime(block.end, gaps) - getVirtualTime(block.start, gaps)) / totalVirtualTime * 100}%`
+    ];
+    if (trackType === "active") {
+      const top = (block.verticalIndex ?? 0) * 40 + 8;
+      styleParts.push(`top:${top}px`);
+      styleParts.push(`--full-top:${top}px`);
+    }
+    const dataAttrs = [
+      `data-start="${block.start}"`,
+      `data-end="${block.end}"`,
+      `data-duration="${block.duration}"`,
+      `data-label="${escapeHtml(block.label)}"`,
+      `data-tooltip="${escapeHtml(block.tooltip)}"`,
+      block.temperature ? `data-temperature="${escapeHtml(block.temperature)}"` : ""
+    ].filter(Boolean).join(" ");
+    return `            <div class="${classes}" style="${styleParts.join(";")}" ${dataAttrs}>
+              <div class="block-label${block.fitsInside ? " label-inside" : ""}">
+                ${block.isAssembly ? `<span class="assembly-icon" title="${escapeHtml(t.playground?.views?.gantt_assembly || "Assembly / Dependencies")}">\u21B3</span>` : ""}
+                ${escapeHtml(block.label)}
+                ${block.temperature ? `<span class="temp-badge">\u{1F321}\uFE0F ${escapeHtml(block.temperature)}</span>` : ""}
+              </div>
+            </div>`;
+  };
+  const tracksHtml = tracks.map((track) => {
+    const heightStyle = track.type === "active" ? ` style="height:${track.dynamicHeight}px;--full-height:${track.dynamicHeight}px"` : "";
+    const blocksHtml = track.blocks.map((block) => renderBlock(block, track.type)).join("\n");
+    return `        <div class="gantt-track ${track.type}"${heightStyle}>
+          <div class="track-label" title="${escapeHtml(track.title)}">${escapeHtml(track.title)}</div>
+          <div class="track-content">
+${blocksHtml}
+          </div>
+        </div>`;
+  }).join("\n");
+  return `<div class="gram-gantt-container">
+    <div class="gantt-header">
+      ${legendHtml}
+      ${controlsHtml}
+    </div>
+    <div class="gantt-wrapper" data-max-real-time="${maxRealTime}" style="min-width:max(600px, ${totalVirtualTime * 12}px)">
+      <div class="gantt-axis">
+        <div class="track-label axis-label">${escapeHtml(t.playground?.views?.gantt_time || "Time")}</div>
+        <div class="track-content">
+          <div class="gantt-axis-gaps">
+${axisGapsHtml}
+          </div>
+${ticksHtml}
+        </div>
+      </div>
+      <div class="gantt-tracks">
+        <div class="gantt-tracks-overlay">
+          <div class="gantt-marker start-marker" style="left:0%"><div class="marker-line"></div></div>
+          <div class="gantt-marker end-marker" style="left:100%"><div class="marker-line"></div></div>
+${trackOverlayGapsHtml}
+        </div>
+${tracksHtml}
+      </div>
+    </div>
+  </div>`;
+}
+
+// src/snippet.mjs
+function textOf(content, names) {
+  return content.map((t) => {
+    if (typeof t === "string") return t;
+    if (t.quantity)
+      return `${t.quantity.text ?? t.quantity.value ?? ""} ${t.unit}`.trim() + " ";
+    if (t.name || names.has(t.id)) return (t.name ?? names.get(t.id)) + " ";
+    return "";
+  }).join("").replace(/\s+([,.;:!?])/g, "$1").replace(/\s+/g, " ").trim();
+}
+function tokensOf(step) {
+  return step.content.filter((t) => typeof t !== "string");
+}
+var qtyText = (q, unit) => q == null ? "" : `${q.text ?? q.value ?? q} ${unit ?? ""}`.trim();
+function sectionSnippet(section, names) {
+  const notes = [];
+  const groups = [];
+  const cooks = [];
+  for (const step of section.steps ?? []) {
+    const toks = tokensOf(step);
+    const used = toks.filter((t) => names.has(t.id));
+    const tokQty = (t) => qtyText(t.quantity, t.unit);
+    const temps = toks.filter((t) => t.type === "temperature").map(tokQty);
+    const timers = toks.filter((t) => t.type === "timer").map(tokQty);
+    const lines = used.map((t) => {
+      const meta3 = section.ingredients?.find((i) => i._usageId === t._usageId);
+      return `${qtyText(meta3?.qty, meta3?.unit)} ${names.get(t.id)}`.trim();
+    });
+    const isCook = temps.length > 0 || timers.length > 0;
+    const txt = textOf(step.content, names);
+    const action = step.action || (/^(In|To|On|For)\b/.test(txt) && txt.includes(",") ? txt.split(",")[1].trim().split(/\s+/)[0] : txt.split(/\s+/)[0]);
+    const actionCap = action ? action[0].toUpperCase() + action.slice(1) : "Step";
+    if (isCook) {
+      cooks.push([actionCap, ...temps, ...timers].filter(Boolean).join(" \xB7 "));
+    }
+    if (lines.length > 0) {
+      groups.push({ action: actionCap, lines });
+    } else if (txt) notes.push(txt);
+  }
+  return { notes, groups, cooks };
+}
+function toSnippetHTML(result) {
+  const names = /* @__PURE__ */ new Map();
+  for (const [id, i] of Object.entries(result.registry?.ingredients ?? {})) {
+    names.set(id, i.name?.includes("$") ? i.name.split("$").pop() : i.name);
+  }
+  for (const i of result.shopping_list ?? [])
+    if (i.name) names.set(i.id, i.name);
+  for (const [id, c] of Object.entries(result.registry?.cookware ?? {}))
+    if (!names.has(id)) names.set(id, c.name);
+  const parts = [];
+  for (const section of result.sections ?? []) {
+    const { notes, groups, cooks } = sectionSnippet(section, names);
+    const cols = groups.length + (cooks.length ? 1 : 0);
+    if (cols === 0) {
+      if (notes.length)
+        parts.push(`<tr><td class="sn-note">${escapeHtml(notes.join(" "))}</td></tr>`);
+      continue;
+    }
+    for (const n of notes)
+      parts.push(
+        `<tr><td class="sn-note" colspan="${cols}">${escapeHtml(n)}</td></tr>`
+      );
+    parts.push("<tr>");
+    for (const g of groups) {
+      parts.push(
+        `<td class="sn-group"><div class="sn-action">${escapeHtml(g.action)}</div><ul class="sn-ings">` + g.lines.map((l) => `<li>${escapeHtml(l)}</li>`).join("") + "</ul></td>"
+      );
+    }
+    if (cooks.length) {
+      parts.push(`<td class="sn-cook">${cooks.map(escapeHtml).join("<br>")}</td>`);
+    }
+    parts.push("</tr>");
+  }
+  if (!parts.length) return "";
+  return `<table class="recipe-snippet">${parts.join("\n")}</table>`;
+}
 
 // src/compile.mjs
 var import_yaml = __toESM(require_dist(), 1);
@@ -31160,6 +31727,34 @@ function loadDb(path) {
   dbCache.set(path, db);
   return db;
 }
+var VALID_OUTPUTS = /* @__PURE__ */ new Set(["html", "gantt", "snippet", "nutrition", "meta"]);
+function nutritionHTML(r) {
+  const n = r.metrics?.nutrition;
+  if (!n || !n.total || !n.total.calories) return "";
+  const row = (label, v, unit) => `<tr><th>${esc2(label)}</th><td>${v == null ? "\u2014" : Math.round(v * 10) / 10 + (unit ? " " + unit : "")}</td></tr>`;
+  const t = n.total;
+  let html = `<table class="gram-nutrition"><thead><tr><th colspan="2">Nutrition</th></tr></thead><tbody>` + row("Calories", t.calories, "kcal") + row("Protein", t.protein, "g") + row("Carbs", t.carbs, "g") + row("Fat", t.fat, "g");
+  if (n.per100g?.calories != null)
+    html += row("Per 100 g", n.per100g.calories, "kcal");
+  html += `</tbody></table>`;
+  if (n.coverage != null && n.coverage < 1)
+    html += `<p class="gram-nutrition-coverage">Estimate covers ${Math.round(n.coverage * 100)}% of ingredients.</p>`;
+  return html;
+}
+var esc2 = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function metaJSON(r) {
+  const m = r.meta ?? {};
+  return {
+    title: r.title,
+    slug: r.slug,
+    portions: m.portions ?? null,
+    category: m.category ?? null,
+    source: m.source ?? null,
+    image: m.image ?? null,
+    totalTime: r.metrics?.totalTime ?? null,
+    activeTime: r.metrics?.activeTime ?? null
+  };
+}
 function renderJob(job) {
   if (typeof job.scale !== "number" || !isFinite(job.scale) || job.scale <= 0)
     throw new Error(`invalid scale ${JSON.stringify(job.scale)} (must be > 0)`);
@@ -31171,18 +31766,28 @@ function renderJob(job) {
     scaleFactor: job.scale === 1 ? void 0 : job.scale
   });
   let recipe = compiled;
-  if (Object.keys(loadDb(job.db)).length > 0 || true) {
-    const analyzed = analyze(compiled, loadDb(job.db), {
-      lang: job.lang || "en"
-    });
-    if (analyzed && analyzed.result) recipe = analyzed.result;
-  }
-  const clean2 = { ...recipe, meta: { title: recipe.title, portions: recipe.meta?.portions } };
-  const html = toHTML(clean2, { lang: job.lang || "en" });
+  const analyzed = analyze(compiled, loadDb(job.db), {
+    lang: job.lang || "en"
+  });
+  if (analyzed && analyzed.result) recipe = analyzed.result;
+  const cleanRender = { ...recipe, meta: { title: recipe.title, portions: recipe.meta?.portions } };
+  const lang = job.lang || "en";
+  let outputs = job.outputs;
+  if (!Array.isArray(outputs) || outputs.length === 0) outputs = ["html"];
+  for (const o of outputs)
+    if (!VALID_OUTPUTS.has(o)) throw new Error(`unknown output kind "${o}"`);
   const warnings = Array.isArray(recipe.warnings) ? recipe.warnings.map(
     (w) => typeof w === "string" ? w : w.message ?? JSON.stringify(w)
   ) : [];
-  return { html, warnings };
+  const out = {};
+  for (const o of outputs) {
+    if (o === "html") out.html = toHTML(cleanRender, { lang });
+    else if (o === "gantt") out.gantt = toGanttHTML(cleanRender, { lang });
+    else if (o === "snippet") out.snippet = toSnippetHTML(cleanRender);
+    else if (o === "nutrition") out.nutrition = nutritionHTML(recipe);
+    else if (o === "meta") out.meta = metaJSON(recipe);
+  }
+  return { ...out, warnings };
 }
 function main() {
   let input;

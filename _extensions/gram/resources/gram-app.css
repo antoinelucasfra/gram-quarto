@@ -1,0 +1,179 @@
+/* gram-app.css — styles for gram-interactive blocks (toolbar, cook mode,
+   quick-overview snippet). Palette via CSS variables — override on :root
+   (or a wrapper class) to theme. */
+:root {
+  --gram-accent: #4f46e5;
+  --gram-accent-soft: #eef2ff;
+  --gram-cook: #059669;
+  --gram-cook-soft: #ecfdf5;
+}
+
+.recipe-toolbar {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin: 1rem 0;
+  flex-wrap: wrap;
+}
+.scale-controls {
+  display: inline-flex;
+  border: 1px solid var(--gram-accent, #ccc);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.scale-btn {
+  border: 0;
+  background: transparent;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+.scale-btn.active {
+  background: var(--gram-accent);
+  color: white;
+}
+.cook-start {
+  border: 0;
+  border-radius: 999px;
+  background: var(--gram-cook);
+  color: white;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+.cook-bar {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--gram-cook-soft);
+  border: 1px solid var(--gram-cook);
+  border-radius: 8px;
+  padding: 0.5rem 0.9rem;
+  margin: 0.5rem 0;
+}
+.recipe-app.cooking .cook-bar {
+  display: block;
+}
+.cook-bar summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+.cook-next {
+  border: 0;
+  border-radius: 999px;
+  background: var(--gram-accent);
+  color: white;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+.cook-exit {
+  border: 1px solid #999;
+  border-radius: 999px;
+  background: transparent;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+.recipe-app.cooking ol.steps > li {
+  display: none;
+  padding: 1rem;
+  border-radius: 8px;
+}
+.recipe-app.cooking ol.steps > li.cook-active {
+  display: block;
+  background: var(--gram-accent-soft);
+  border: 2px solid var(--gram-accent);
+  font-size: 1.15em;
+  line-height: 1.8;
+}
+.recipe-app.cooking section.cook-hidden-section {
+  display: none;
+}
+.recipe-app.cooking .shopping-list,
+.recipe-app.cooking .nutrition-panel,
+.recipe-app.cooking .section-ingredients,
+.recipe-app.cooking .recipe-timings-grid {
+  display: none;
+}
+.gantt-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+}
+
+/* page title usually comes from the host document — hide the duplicate */
+.recipe-render h1 {
+  display: none;
+}
+
+/* --- quick-overview snippet --- */
+.snippet-box {
+  margin: 1rem 0 1.5rem;
+}
+.snippet-box summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+table.recipe-snippet {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75rem 0;
+  border: 2px solid var(--gram-cook);
+}
+.recipe-snippet td {
+  border: 1px solid #86efac;
+  vertical-align: top;
+  padding: 0;
+}
+.sn-note {
+  text-align: center;
+  font-weight: 600;
+  padding: 0.4rem 0.75rem !important;
+  background: #f0fdf4;
+}
+.sn-group {
+  padding: 0.4rem 0.75rem !important;
+}
+.sn-action {
+  font-weight: 700;
+  color: #15803d;
+  margin-bottom: 0.35rem;
+}
+.sn-ings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sn-ings li {
+  border-top: 1px dashed #bbf7d0;
+  padding: 0.25rem 0;
+  font-size: 0.95em;
+}
+.sn-cook {
+  padding: 0.4rem 0.75rem !important;
+  font-weight: 600;
+  white-space: nowrap;
+  background: #f0fdf4;
+  text-align: center;
+}
+
+/* --- nutrition table --- */
+table.gram-nutrition {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+}
+table.gram-nutrition th,
+table.gram-nutrition td {
+  border: 1px solid #e5e7eb;
+  padding: 0.3rem 0.8rem;
+  text-align: left;
+}
+table.gram-nutrition thead th {
+  background: var(--gram-accent-soft);
+}
+.gram-nutrition-coverage {
+  font-size: 0.85em;
+  color: #666;
+}
