@@ -1,11 +1,10 @@
 // test-compile.mjs — assert-based checks for resources/gram-compile.cjs
 // Run: node test/test-compile.mjs   (from repo root)
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert";
 
-const BUNDLE = new URL("../_extensions/gram/resources/gram-compile.cjs", import.meta.url).pathname;
+const BUNDLE = fileURLToPath(new URL("../_extensions/gram/resources/gram-compile.cjs", import.meta.url));
 
 function compile(jobs) {
   const r = spawnSync("node", [BUNDLE], {
@@ -60,7 +59,34 @@ assert(/unbalanced/.test(results.bal.error), "unclosed brace rejected");
 results = compile([{ id: "s0", source: CAKE, scale: -2, lang: "en" }]);
 assert(results.s0.error && /scale/i.test(results.s0.error), "negative scale rejected");
 
-// 6. db path loads ingredients (warning disappears when known)
+// 6. output kinds
+results = compile([{ id: "g", source: CAKE, scale: 1, lang: "en", outputs: ["gantt"] }]);
+assert(results.g.gantt && results.g.gantt.length > 0, "gantt output renders");
+assert(results.g.html === undefined, "unrequested html omitted");
+
+results = compile([{ id: "sn", source: CAKE, scale: 1, lang: "en", outputs: ["snippet"] }]);
+assert(results.sn.snippet.includes("recipe-snippet"), "snippet output renders");
+
+results = compile([{ id: "nu", source: CAKE, scale: 1, lang: "en", outputs: ["nutrition"] }]);
+assert(results.nu.nutrition === "", "nutrition empty without db data");
+
+results = compile([{ id: "me", source: "---\ntitle: T Cake\ncategory: Dessert\n---\n" + CAKE, scale: 1, lang: "en", outputs: ["meta"] }]);
+assert(results.me.meta.title === "T Cake", "meta title");
+assert(results.me.meta.category === "Dessert", "meta category preserved");
+assert(typeof results.me.meta.totalTime === "number", "meta totalTime");
+
+// 7. multi-scale batch
+results = compile([
+  { id: "m1", source: CAKE, scale: 0.5, lang: "en", outputs: ["html"] },
+  { id: "m2", source: CAKE, scale: 1, lang: "en", outputs: ["html"] },
+]);
+assert(results.m1.html !== results.m2.html, "batch: scales differ");
+
+// 8. invalid output kind rejected
+results = compile([{ id: "bad", source: CAKE, scale: 1, lang: "en", outputs: ["nope"] }]);
+assert(results.bad.error && /unknown output/.test(results.bad.error), "bad output kind rejected");
+
+// 9. db path loads ingredients (warning disappears when known)
 const dbPath = process.env.GRAM_TEST_DB || null;
 if (dbPath) {
   const withDb = compile([{ id: "d", source: "@eggs{3}\n## E\n", scale: 1, lang: "en", db: dbPath }]);
