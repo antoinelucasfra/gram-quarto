@@ -1,6 +1,10 @@
 title: gram
 author: tonio
 version: 1.1.0
+description: >-
+  Render Gram recipes (.gram) into styled, interactive HTML directly from
+  Quarto documents and shortcodes — build-time compilation, no runtime
+  JavaScript dependency for authors.
 quarto-required: ">=1.4.0"
 contributes:
   shortcodes:

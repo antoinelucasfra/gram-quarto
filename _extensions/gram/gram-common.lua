@@ -80,7 +80,7 @@ function M.injectCss()
   pcall(function()
     quarto.doc.add_html_dependency({
       name = "gram-css",
-      version = "1.0.0",
+      version = "1.1.0",
       stylesheets = { "resources/gram.css" },
     })
   end)

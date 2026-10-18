@@ -4,6 +4,47 @@ A [Quarto](https://quarto.org) extension that renders [Gram](https://docs.gram-l
 recipes into styled HTML at build time — no runtime JavaScript, no npm install
 for users.
 
+## Why an extension? Gram vs gram-quarto
+
+The [Gram CLI](https://docs.gram-lang.org) (npm package `@gram-lang/cli`) is
+the standalone compiler: `gram render recipe.gram` turns a `.gram` file into a
+static HTML file you then paste somewhere. It knows nothing about Quarto,
+scale switching, or websites.
+
+This extension wraps the same compiler (`@gram-lang/parser`, `kitchen`,
+`analyzer`, `renderer`) but makes it a first-class Quarto citizen. What it
+adds over running the base Gram tool by hand:
+
+- **Embed recipes where you write.** `` ```` {.gram} `````` code blocks and
+  `{{< gram src=... >}}` shortcodes compile during `quarto render`, so a recipe
+  is just part of a document — no intermediate HTML files to copy around.
+- **Strict validation.** Gram's parser is lenient by design (garbage becomes
+  text nodes). The extension adds a gate so a broken recipe fails the build
+  with a clear error instead of silently rendering an empty card.
+- **Multi-scale, multi-output in one shot.** Each source compiles once across
+  `scales="0.5,1,2,3"` into html / gantt / snippet / nutrition / meta outputs
+  in a single Node spawn, batched per recipe.
+- **Interactive recipe pages.** `{{< gram-interactive >}}` bundles a
+  scale-switcher and cook mode (step-through with big text) that the CLI does
+  not provide, plus en/fr UI strings and CSS-variable theming
+  (`--gram-accent`, `--gram-cook`).
+- **Content-hash caching.** Results cache in `.quarto-gram-cache/` keyed on
+  source, scales, lang, ingredient-DB *content* and outputs — unchanged
+  recipes don't recompile between renders, and DB edits do invalidate.
+- **Structured metadata.** `{{< gram-meta field=... >}}` and nutrition outputs
+  read front-matter and analyzed nutrition so listings and cards can be built
+  from the recipe source itself.
+
+The extension exists because of a concrete project:
+[cookbook-web](https://github.com/antoinelucasfra/cookbook-web), a bilingual
+(EN/FR) cookbook website built with Quarto. Every recipe there is a `.gram`
+source compiled by this extension into an interactive page; an ingredient
+analysis database (`ingredients.yaml`) resolves quantities and nutrition;
+recipes are submitted through GitHub issues and published after review. The
+build emits per-recipe pages that only call `{{< gram-interactive >}}` — the
+extension handles compiling, caching, and interactivity, so the site's own
+build script stays metadata-only.
+
 ## Install
 
 ``` bash
