@@ -42,6 +42,22 @@ Options: `scale="2"` (scale all quantities), `lang="fr"` (labels), `db="path/to/
 
 Same attributes work on the block: ```` ```{.gram scale=2} ````.
 
+**Output variants** (same options):
+
+- `{{< gram-gantt src="..." >}}` — parallel-timeline Gantt chart
+- `{{< gram-snippet src="..." >}}` — table-style quick overview (action columns + ingredient rows)
+- `{{< gram-nutrition src="..." >}}` — nutrition table (empty without ingredient data)
+- `{{< gram-meta src="..." field="totalTime" >}}` — one metadata value as text:
+  `title`, `slug`, `portions`, `category`, `source`, `image`, `totalTime`, `activeTime`
+
+**Full interactive recipe** (scale switcher + cook mode + snippet + timeline, one
+small bundled script, no dependencies):
+
+    {{< gram-interactive src="recipes/pancakes.gram" scales="0.5,1,2,3" >}}
+
+Attributes: `scales="1,2"` (list of scales to precompile; default `0.5,1,2,3`),
+`snippet="false"` / `gantt="false"` to drop sections, plus `src`, `lang`, `db`.
+
 **Validation is automatic**: every referenced or embedded Gram source is
 compiled on each render. Broken recipes fail the build. The bundled compiler
 also runs strict sanity checks the lenient gram parser skips — control
@@ -56,11 +72,18 @@ the project directory and passes it to the analyzer (nutrition, mass metrics).
 No DB found → compiles without nutrition data. Override per-recipe with
 `db="..."`.
 
+## Theming
+
+`gram-app.css` (interactive blocks) is driven by CSS custom properties — set
+`--gram-accent`, `--gram-accent-soft`, `--gram-cook`, `--gram-cook-soft` on
+`:root` or a wrapper to match your site. `gram.css` (recipe body) can be
+overridden per class as usual.
+
 ## Caching
 
 Compiled results are cached in `.quarto-gram-cache/` (project root), keyed by
-content hash + scale + lang + db. Add it to `.gitignore`. Delete it if you
-upgrade the extension.
+content hash + scales + lang + db + outputs. Add it to `.gitignore`. Delete it
+if you upgrade the extension.
 
 ## How it works
 

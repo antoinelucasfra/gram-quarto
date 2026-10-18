@@ -21,3 +21,23 @@ title: "Gram extension demo"
 ## Pancakes
 [Fry] @flour{200g} in @butter{30g}, ~{3 min} per side.
 ```
+
+## Output variants
+
+### Gantt
+
+{{< gram-gantt src="recipes/pancakes.gram" >}}
+
+### Quick overview
+
+{{< gram-snippet src="recipes/pancakes.gram" >}}
+
+### Meta fields
+
+Title: {{< gram-meta src="recipes/pancakes.gram" field="title" >}} ·
+Time: {{< gram-meta src="recipes/pancakes.gram" field="totalTime" >}} min ·
+Portions: {{< gram-meta src="recipes/pancakes.gram" field="portions" >}}
+
+### Interactive block
+
+{{< gram-interactive src="recipes/pancakes.gram" scales="0.5,1,2,3" >}}
