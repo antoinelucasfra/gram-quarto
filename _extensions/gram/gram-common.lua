@@ -6,6 +6,9 @@
 local M = {}
 M.hasGram = false -- set true by shortcode/filter when a doc contains gram content
 
+-- bump when compiled-output format changes so disk caches invalidate cleanly
+local CACHE_VERSION = "2"
+
 local HERE = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
 
 function M.projectDir()
@@ -65,8 +68,9 @@ local function cacheDir()
 end
 
 local function ensureCacheDir()
-  local ok = pcall(function() pandoc.system.make_directory(cacheDir(), true) end)
-  if not ok then os.execute('mkdir -p "' .. cacheDir() .. '"') end
+  -- pandoc.system.make_directory is sandbox-safe; avoid os.execute/os.tmpname
+  -- (os.tmpname crashes pandoc >= 3.6/Quarto 1.9 on Windows)
+  pandoc.system.make_directory(cacheDir(), true)
 end
 
 local cssDone = false
@@ -82,41 +86,83 @@ function M.injectCss()
   end)
 end
 
--- compile one gram source -> {html=..., warnings={...}}
+local appDone = false
+function M.injectApp()
+  if appDone then return end
+  appDone = true
+  pcall(function()
+    quarto.doc.add_html_dependency({
+      name = "gram-app",
+      version = "1.1.0",
+      stylesheets = { "resources/gram-app.css" },
+      scripts = { "resources/gram-app.js" },
+    })
+  end)
+end
+
+local UI_STRINGS = {
+  en = {
+    portions = "Portions",
+    cookStart = "▶ Cook mode",
+    cookActive = "Cook mode active —",
+    cookNext = "Next step →",
+    cookExit = "Exit",
+    overview = "⚡ Quick overview",
+    timeline = "⏱ Timeline",
+  },
+  fr = {
+    portions = "Portions",
+    cookStart = "▶ Mode cuisine",
+    cookActive = "Mode cuisine actif —",
+    cookNext = "Étape suivante →",
+    cookExit = "Quitter",
+    overview = "⚡ Aperçu rapide",
+    timeline = "⏱ Chronologie",
+  },
+}
+
+function M.uiStrings(lang)
+  return UI_STRINGS[lang] or UI_STRINGS.en
+end
+
+-- compile gram source(s) -> {html=..., gantt=..., ..., warnings={...}}
+-- outputs: array of kinds (default {"html"}); scales: array of numbers (default {1})
 -- results cached in-memory per render and on disk keyed by content hash
 local memcache = {}
 
-function M.compile(source, scale, lang, dbPath)
-  scale = tonumber(scale) or 1
-  lang = lang or "en"
-  if scale ~= scale or scale <= 0 or math.huge == scale then
-    error("[gram] scale must be a positive number, got: " .. tostring(scale))
+local function normalizeOutputs(outputs)
+  local list = {}
+  local seen = {}
+  for _, o in ipairs(outputs or { "html" }) do
+    if o == true then o = "html" end
+    if not seen[o] then table.insert(list, o); seen[o] = true end
   end
+  if #list == 0 then list = { "html" } end
+  return list
+end
 
-  local key = table.concat(
-    { pandoc.utils.sha1(source .. "\0" .. scale .. "\0" .. lang .. "\0" .. tostring(dbPath)) })
+local function compileSpec(source, scales, lang, dbPath, outputs)
+  local jobs = {}
+  for i, s in ipairs(scales) do
+    table.insert(jobs, {
+      id = "s" .. i,
+      source = source,
+      scale = tonumber(s) or 1,
+      lang = lang,
+      db = dbPath,
+      outputs = outputs,
+    })
+  end
+  return pandoc.json.encode({ jobs = jobs })
+end
 
-  if memcache[key] then return memcache[key] end
-
+-- run one node batch for a (source,lang,db,outputs) key over scales
+local function runBatch(source, scales, lang, dbPath, outputs, key)
   ensureCacheDir()
-  local htmlFile = cacheDir() .. "/" .. key .. ".html"
-  local warnFile = cacheDir() .. "/" .. key .. ".warnings"
-  local cachedHtml = M.readFile(htmlFile)
-  if cachedHtml then
-    local warnings = {}
-    local raw = M.readFile(warnFile) or ""
-    for w in raw:gmatch("[^\n]+") do table.insert(warnings, w) end
-    memcache[key] = { html = cachedHtml, warnings = warnings }
-    return memcache[key]
-  end
-
-  -- write batch spec to temp file (no shell-quoting hazards)
-  local specPath = os.tmpname()
-  local spec = pandoc.json.encode({
-    jobs = { { id = "job0", source = source, scale = scale, lang = lang, db = dbPath } },
-  })
-  writeFile(specPath, spec)
-
+  -- keep the batch spec inside the cache dir, named per cache key: a fixed
+  -- name would let concurrent renders overwrite each other's spec
+  local specPath = cacheDir() .. "/" .. key .. ".spec.json"
+  writeFile(specPath, compileSpec(source, scales, lang, dbPath, outputs))
   local bundle = HERE .. "/resources/gram-compile.cjs"
   if not M.fileExists(bundle) then
     error("[gram] bundled compiler missing: " .. bundle)
@@ -129,26 +175,83 @@ function M.compile(source, scale, lang, dbPath)
   local out = pipe:read("*a")
   local closeOk, _, closeCode = pipe:close()
   os.remove(specPath)
-
   if out == nil or out == "" then
     error("[gram] compiler produced no output (exit "
       .. tostring(closeCode) .. "). Is Node >= 18 installed?")
   end
   local decoded = pandoc.json.decode(out)
-  local r = decoded and decoded.results and decoded.results.job0
-  if r == nil then
+  local results = decoded and decoded.results
+  if results == nil then
     error("[gram] compiler returned malformed output:\n" .. out:sub(1, 500))
   end
-  if r.error ~= nil then
-    error("[gram] compilation failed:\n" .. r.error)
+  return results
+end
+
+-- M.compile(source, scale|scales, lang, dbPath, outputs) -> table of results:
+--   single scale: { html=..., gantt=..., warnings={...} }
+--   multi scale:  { ["0.5"]={...}, ["1"]={...}, ... } (string keys)
+function M.compile(source, scale, lang, dbPath, outputs)
+  lang = lang or "en"
+  local scales
+  if type(scale) == "table" then scales = scale else scales = { scale or 1 } end
+  for _, s in ipairs(scales) do
+    local n = tonumber(s)
+    if n == nil or n ~= n or n <= 0 or n == math.huge then
+      error("[gram] scale must be a positive number, got: " .. tostring(s))
+    end
   end
-  for _, w in ipairs(r.warnings or {}) do
-    quarto.log.warning("[gram] " .. w)
+  outputs = normalizeOutputs(outputs)
+  local single = #scales == 1
+  table.sort(scales)
+
+  -- hash the ingredient DB content so edits invalidate the cache (empty
+  -- string when there is no db); bump CACHE_VERSION when output format changes
+  local dbHash = ""
+  if dbPath ~= nil and M.fileExists(dbPath) then
+    dbHash = pandoc.utils.sha1(M.readFile(dbPath)):sub(1, 12)
   end
-  writeFile(htmlFile, r.html)
-  writeFile(warnFile, table.concat(r.warnings or {}, "\n"))
-  memcache[key] = r
-  return r
+  local key = pandoc.utils.sha1(CACHE_VERSION .. "\0" .. source .. "\0"
+    .. table.concat(scales, ",") .. "\0" .. lang .. "\0" .. tostring(dbPath)
+    .. "\0" .. dbHash .. "\0" .. table.concat(outputs, ","))
+  if memcache[key] then return memcache[key] end
+
+  ensureCacheDir()
+  local cacheFile = cacheDir() .. "/" .. key .. ".json"
+  local warnFile = cacheDir() .. "/" .. key .. ".warnings"
+  local cached = M.readFile(cacheFile)
+  if cached then
+    local warnings = {}
+    local raw = M.readFile(warnFile) or ""
+    for w in raw:gmatch("[^\n]+") do table.insert(warnings, w) end
+    memcache[key] = pandoc.json.decode(cached)
+    if single then memcache[key].warnings = warnings
+    else for _, r in pairs(memcache[key]) do r.warnings = warnings end end
+    return memcache[key]
+  end
+
+  local results = runBatch(source, scales, lang, dbPath, outputs, key)
+  local merged, warnings = {}, {}
+  for i, s in ipairs(scales) do
+    local r = results["s" .. i]
+    if r == nil then
+      error("[gram] compiler returned malformed output (missing result s" .. i .. ")")
+    end
+    if r.error ~= nil then
+      error("[gram] compilation failed:\n" .. r.error)
+    end
+    for _, w in ipairs(r.warnings or {}) do
+      quarto.log.warning("[gram] " .. w)
+      table.insert(warnings, w)
+    end
+    r.warnings = nil
+    merged[tostring(scales[i])] = r
+  end
+  writeFile(warnFile, table.concat(warnings, "\n"))
+  local payload = single and merged[tostring(scales[1])] or merged
+  writeFile(cacheFile, pandoc.json.encode(payload))
+  if single then payload.warnings = warnings end
+  memcache[key] = payload
+  return payload
 end
 
 return M
